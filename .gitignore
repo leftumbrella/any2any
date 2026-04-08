@@ -37,7 +37,7 @@ htmlcov/
 # Editable install metadata
 src/*.egg-info/
 
-# Test images / sample files
+# Image / media files (avoid committing converted outputs)
 *.heic
 *.heif
 *.avif
@@ -91,3 +91,6 @@ src/*.egg-info/
 *.pict
 *.pct
 *.wbmp
+
+# BUT keep test asset files
+!tests/assests/**

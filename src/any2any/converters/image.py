@@ -306,6 +306,18 @@ def _read_svg(path: Path) -> ImageData:
 # ── writers ──────────────────────────────────────────────────────────────
 
 
+def _sanitize_exif(exif_bytes: bytes) -> bytes | None:
+    """Re-serialize EXIF through Pillow to strip invalid entries."""
+    try:
+        from PIL.Image import Exif
+        exif = Exif()
+        exif.load(exif_bytes)
+        cleaned = exif.tobytes()
+        return cleaned if cleaned else None
+    except Exception:
+        return None
+
+
 def _write_pillow(data: ImageData, path: Path) -> None:
     """Write via Pillow (+ plugins).  Max quality, preserve metadata."""
     ext = path.suffix.lower().lstrip(".")
@@ -313,8 +325,28 @@ def _write_pillow(data: ImageData, path: Path) -> None:
     frame = data.frames[0]
     meta = dict(data.metadata)
     frame = _ensure_mode(frame, fmt, meta)
+
+    # TIFF embeds EXIF as native tags; raw bytes from other formats may
+    # contain values that overflow Classic TIFF fields.  Sanitize first,
+    # and fall back to saving without EXIF if it still fails.
+    if fmt == "TIFF" and "exif" in meta:
+        cleaned = _sanitize_exif(meta["exif"])  # type: ignore[arg-type]
+        if cleaned:
+            meta["exif"] = cleaned
+        else:
+            del meta["exif"]
+
     kw = _save_kwargs(meta, fmt)
-    frame.save(path, **kw)
+
+    try:
+        frame.save(path, **kw)
+    except Exception:
+        # Last resort: drop EXIF and retry (covers remaining edge cases).
+        if "exif" in kw:
+            del kw["exif"]
+            frame.save(path, **kw)
+        else:
+            raise
 
 
 # ── registration ─────────────────────────────────────────────────────────
