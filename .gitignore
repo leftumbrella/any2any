@@ -1,0 +1,93 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+*.egg
+dist/
+build/
+*.whl
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Testing / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Distribution / packaging
+*.tar.gz
+*.zip
+
+# Editable install metadata
+src/*.egg-info/
+
+# Test images / sample files
+*.heic
+*.heif
+*.avif
+*.cr2
+*.cr3
+*.nef
+*.arw
+*.dng
+*.orf
+*.rw2
+*.pef
+*.raf
+*.srw
+*.raw
+*.psd
+*.psb
+*.xcf
+*.ai
+*.eps
+*.svg
+*.cdr
+*.wmf
+*.emf
+*.exr
+*.hdr
+*.flif
+*.jxl
+*.jp2
+*.j2k
+*.ico
+*.cur
+*.icns
+*.dds
+*.sgi
+*.tga
+*.pcx
+*.ppm
+*.pgm
+*.pbm
+*.xbm
+*.xpm
+*.bmp
+*.tiff
+*.tif
+*.gif
+*.webp
+*.jpg
+*.jpeg
+*.png
+*.pdf
+*.pict
+*.pct
+*.wbmp
