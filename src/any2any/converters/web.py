@@ -63,6 +63,8 @@ html, body {
 }
 """
 
+_FULL_PAGE_SCREENSHOT_SLACK_PX = 32
+
 # ── social-media embed detection ────────────────────────────────────────
 
 
@@ -299,9 +301,10 @@ def _capture_page_png(page) -> bytes:
     """Capture a page as one image without scrolling or stitching."""
     viewport = page.viewport_size or {"width": 1920, "height": 1080}
     viewport_width = int(viewport["width"])
+    viewport_height = int(viewport["height"])
     total_height = _page_height(page)
 
-    if total_height <= int(viewport["height"]):
+    if total_height <= viewport_height + _FULL_PAGE_SCREENSHOT_SLACK_PX:
         return page.screenshot(full_page=True)
 
     page.set_viewport_size({"width": viewport_width, "height": total_height})
