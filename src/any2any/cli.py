@@ -9,7 +9,18 @@ import tempfile
 from pathlib import Path
 
 from any2any import __version__
-from any2any.converters import ImageData, can_convert, read_image, write_image
+from any2any.converters import (
+    ImageData,
+    can_convert,
+    convert_direct,
+    read_image,
+    write_image,
+)
+
+
+def _is_url(s: str) -> bool:
+    """Return True if *s* looks like an HTTP(S) URL."""
+    return s.startswith("http://") or s.startswith("https://")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -24,8 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "input",
-        type=Path,
-        help="Path to the input file.",
+        help="Path to the input file, or an HTTP(S) URL.",
     )
     parser.add_argument(
         "output",
@@ -59,28 +69,29 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    input_path: Path = args.input
+    input_raw: str = args.input
     output_raw: str = args.output
+    is_url = _is_url(input_raw)
 
-    # ── validate input ──────────────────────────────────────────────
-    if not input_path.exists():
-        print(f"any2any: error: input file not found: {input_path}", file=sys.stderr)
-        return 1
-    if not input_path.is_file():
-        print(f"any2any: error: input is not a file: {input_path}", file=sys.stderr)
-        return 1
-
-    in_ext = input_path.suffix.lower().lstrip(".")
-    if not in_ext:
-        print("any2any: error: input file has no extension", file=sys.stderr)
-        return 1
+    # ── determine source type / extension ──────────────────────────
+    if is_url:
+        in_ext = "url"
+    else:
+        input_path = Path(input_raw)
+        if not input_path.exists():
+            print(f"any2any: error: input file not found: {input_path}", file=sys.stderr)
+            return 1
+        if not input_path.is_file():
+            print(f"any2any: error: input is not a file: {input_path}", file=sys.stderr)
+            return 1
+        in_ext = input_path.suffix.lower().lstrip(".")
+        if not in_ext:
+            print("any2any: error: input file has no extension", file=sys.stderr)
+            return 1
 
     # ── detect multi-frame mode ("*.jpg") ───────────────────────────
     multi_frame = "*" in output_raw
-    if multi_frame:
-        out_ext = Path(output_raw).suffix.lower().lstrip(".")
-    else:
-        out_ext = Path(output_raw).suffix.lower().lstrip(".")
+    out_ext = Path(output_raw).suffix.lower().lstrip(".")
 
     if not out_ext:
         print("any2any: error: output has no extension", file=sys.stderr)
@@ -88,19 +99,34 @@ def main(argv: list[str] | None = None) -> int:
 
     if not can_convert(in_ext, out_ext):
         print(
-            f"any2any: error: no converter available for .{in_ext} -> .{out_ext}",
+            f"any2any: error: no converter available for "
+            f"{'URL' if is_url else '.' + in_ext} -> .{out_ext}",
             file=sys.stderr,
         )
         return 1
 
-    # ── read ────────────────────────────────────────────────────────
+    # ── URL path (direct converters) ───────────────────────────────
+    if is_url:
+        if multi_frame:
+            print("any2any: error: multi-frame output is not supported for URLs", file=sys.stderr)
+            return 1
+        try:
+            output_path = Path(output_raw)
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            convert_direct("url", input_raw, output_path)
+            print(f"{input_raw} -> {output_path}", file=sys.stderr)
+        except Exception as exc:
+            print(f"any2any: error: conversion failed: {exc}", file=sys.stderr)
+            return 1
+        return 0
+
+    # ── file path (reader/writer pipeline) ─────────────────────────
     try:
         data = read_image(input_path)
     except Exception as exc:
         print(f"any2any: error: failed to read input: {exc}", file=sys.stderr)
         return 1
 
-    # ── write ───────────────────────────────────────────────────────
     try:
         if multi_frame:
             n = len(data.frames)

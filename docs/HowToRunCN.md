@@ -55,7 +55,7 @@ pip install -e ".[all,dev]"
 any2any 输入文件 输出文件
 ```
 
-程序根据扩展名自动识别格式并转换。
+程序根据扩展名自动识别格式并转换。输入也可以是一个 HTTP(S) URL。
 
 ### 示例
 
@@ -84,6 +84,23 @@ any2any animated.gif "*.png"
 
 # 动画 GIF 仅保留第一帧
 any2any animated.gif first_frame.jpg
+
+# 网页截图为图片（支持所有图片格式）
+any2any https://example.com page.png
+any2any https://example.com page.jpg
+any2any https://example.com page.webp
+
+# 网页转 PDF（浏览器原生渲染，支持长页面分页）
+any2any https://example.com page.pdf
+
+# 保存网页 HTML 源码（JS 渲染后的完整 DOM）
+any2any https://example.com page.html
+
+# 提取网页可见文本
+any2any https://example.com page.txt
+
+# 网页截图嵌入 SVG
+any2any https://example.com page.svg
 ```
 
 ### 转换原则
@@ -96,6 +113,7 @@ any2any animated.gif first_frame.jpg
 - **矢量 96 DPI**：SVG 转光栅时默认 96 DPI
 - **动画帧控制**：指定文件名保留第一帧，`*.ext` 通配符提取全部帧
 - **安全写入**：通过临时文件写入，转换失败时源文件不受影响
+- **网页渲染**：URL 输入通过无头 Chromium 渲染，首次使用时自动下载浏览器
 
 ### 支持的格式
 
@@ -137,6 +155,11 @@ any2any animated.gif first_frame.jpg
 | | ICNS | .icns | ✓ | ✓ |
 | | CUR | .cur | ✓ | — |
 | | PICT | .pict, .pct | ✓ | — |
+| 网页 | URL → 图片 | http(s)://... | ✓ | ✓ |
+| | URL → PDF | http(s)://... | ✓ | ✓ |
+| | URL → HTML | http(s)://... | ✓ | ✓ |
+| | URL → TXT | http(s)://... | ✓ | ✓ |
+| | URL → SVG | http(s)://... | ✓ | ✓ |
 
 - ✓ = 核心支持（pip install 即可）
 - ✓° = 需安装可选依赖（`pip install any2any[svg]` 或 `pip install any2any[jxl]`）
