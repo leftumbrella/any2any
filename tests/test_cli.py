@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import io
 import subprocess
 import sys
+import time
+from contextlib import contextmanager
 from pathlib import Path
 
+import any2any.cli as cli_module
 import pytest
 from PIL import Image
 
+from any2any.converters import ImageData
 from any2any.cli import main
 
 
@@ -102,6 +107,99 @@ def test_stderr_multi_frame(tmp_path: Path, capsys: pytest.CaptureFixture[str]) 
     assert main([str(src), str(tmp_path / "*.png")]) == 0
     err = capsys.readouterr().err
     assert "2 frame(s)" in err
+
+
+class _TTYStringIO(io.StringIO):
+    def isatty(self) -> bool:
+        return True
+
+
+class _PipeStringIO(io.StringIO):
+    def isatty(self) -> bool:
+        return False
+
+
+def test_work_indicator_animates_on_tty(monkeypatch: pytest.MonkeyPatch) -> None:
+    stream = _TTYStringIO()
+    monkeypatch.setattr(cli_module.sys, "stderr", stream)
+    monkeypatch.setattr(cli_module, "_SPINNER_INTERVAL", 0.01)
+
+    with cli_module._work_indicator("converting"):
+        time.sleep(0.04)
+
+    output = stream.getvalue()
+    assert "any2any: | converting..." in output
+    assert any(
+        frame in output
+        for frame in (
+            "any2any: / converting...",
+            "any2any: - converting...",
+            r"any2any: \ converting...",
+        )
+    )
+
+
+def test_work_indicator_is_silent_without_tty(monkeypatch: pytest.MonkeyPatch) -> None:
+    stream = _PipeStringIO()
+    monkeypatch.setattr(cli_module.sys, "stderr", stream)
+
+    with cli_module._work_indicator("converting"):
+        pass
+
+    assert stream.getvalue() == ""
+
+
+def test_main_uses_work_indicator_for_file_conversion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    src = tmp_path / "s.png"
+    src.write_bytes(b"x")
+    out = tmp_path / "o.jpg"
+    labels: list[str] = []
+
+    @contextmanager
+    def fake_indicator(message: str):
+        labels.append(message)
+        yield
+
+    monkeypatch.setattr(cli_module, "_work_indicator", fake_indicator)
+    monkeypatch.setattr(cli_module, "can_convert", lambda *_args: True)
+    monkeypatch.setattr(
+        cli_module,
+        "read_image",
+        lambda _path: ImageData(frames=[Image.new("RGB", (1, 1))], metadata={}),
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "_safe_write",
+        lambda _data, path: path.write_bytes(b"ok"),
+    )
+
+    assert main([str(src), str(out)]) == 0
+    assert labels == ["reading input", "converting"]
+
+
+def test_main_uses_work_indicator_for_url_conversion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    out = tmp_path / "page.png"
+    labels: list[str] = []
+
+    @contextmanager
+    def fake_indicator(message: str):
+        labels.append(message)
+        yield
+
+    monkeypatch.setattr(cli_module, "_work_indicator", fake_indicator)
+    monkeypatch.setattr(cli_module, "can_convert", lambda *_args: True)
+    monkeypatch.setattr(
+        cli_module,
+        "convert_direct",
+        lambda _kind, _source, path: path.write_bytes(b"ok"),
+    )
+
+    assert main(["https://example.com", str(out)]) == 0
+    assert labels == ["converting"]
 
 
 # ── safe write (principle 8) ─────────────────────────────────────────────

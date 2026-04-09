@@ -18,6 +18,8 @@ import sys
 from pathlib import Path
 from urllib.parse import urlparse
 
+from PIL import Image
+
 from any2any.converters import (
     ImageData,
     register_direct_converter,
@@ -51,6 +53,13 @@ div[class*="BottomBar" i]
 html, body {
     overflow: visible !important;
     position: static !important;
+    scroll-behavior: auto !important;
+}
+*, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+    content-visibility: visible !important;
+    contain-intrinsic-size: auto !important;
 }
 """
 
@@ -87,7 +96,7 @@ def _social_embed(url: str) -> tuple[str, str | None] | None:
         if m:
             return (
                 f"https://www.instagram.com/p/{m.group(2)}/embed/",
-                None,
+                ".instagram-media-rendered",
             )
 
     # TikTok
@@ -190,7 +199,7 @@ def _screenshot_url(url: str) -> bytes:
     # Generic full-page screenshot.
     pw, browser, page = _render(url)
     try:
-        return page.screenshot(full_page=True)
+        return _capture_page_png(page)
     finally:
         browser.close()
         pw.stop()
@@ -198,44 +207,32 @@ def _screenshot_url(url: str) -> bytes:
 
 _EMBED_CLEANUP_JS: dict[str, str] = {
     "instagram.com": """
-        // Walk the DOM and hide elements containing "Add a comment"
-        // and login prompts — Instagram's embed uses plain divs, not
-        // <form> or <input>, so CSS selectors cannot target them.
-        (function() {
-            const walker = document.createTreeWalker(
-                document.body, NodeFilter.SHOW_TEXT);
-            const targets = [];
-            while (walker.nextNode()) {
-                const t = walker.currentNode.textContent.trim();
-                if (t === 'Add a comment\u2026' || t === 'Add a comment...') {
-                    targets.push(walker.currentNode);
-                }
-                if (t.startsWith('Log in') || t.startsWith('Sign up')) {
-                    targets.push(walker.currentNode);
-                }
-            }
-            for (const node of targets) {
-                // Walk up to find a meaningful container and hide it.
-                let el = node.parentElement;
-                while (el && el !== document.body &&
-                       el.offsetHeight < 5) {
-                    el = el.parentElement;
-                }
-                if (el && el !== document.body) {
-                    el.style.display = 'none';
-                }
-            }
-        })();
+        // Keep Instagram's own compact comment area/layout intact.
+        // The previous text-based hiding left empty space behind.
+        void 0;
     """,
 }
+
+
+def _embed_viewport(embed_url: str) -> dict[str, int]:
+    """Choose a staging viewport before cropping the final embed card.
+
+    For selector-based embeds, render wide first so the platform's own CSS
+    can settle on its natural card width; the final screenshot size then
+    comes from the element box rather than this staging viewport.
+    """
+    if "instagram.com" in embed_url or "platform.twitter.com" in embed_url:
+        return {"width": 1200, "height": 1200}
+    return {"width": 550, "height": 800}
 
 
 def _screenshot_embed(embed_url: str, card_selector: str | None) -> bytes:
     """Render an embed page and return the card as PNG bytes."""
     pw, browser = _launch_browser()
+    viewport = _embed_viewport(embed_url)
 
     page = browser.new_page(
-        viewport={"width": 550, "height": 800},
+        viewport=viewport,
         user_agent=_DESKTOP_UA,
     )
 
@@ -259,14 +256,58 @@ def _screenshot_embed(embed_url: str, card_selector: str | None) -> bytes:
 
         # Try to screenshot just the card element.
         if card_selector:
+            try:
+                page.wait_for_selector(card_selector, state="visible", timeout=5_000)
+            except Exception:
+                pass
             el = page.query_selector(card_selector)
             if el:
                 return el.screenshot()
 
-        return page.screenshot(full_page=True)
+        return _capture_page_png(page)
     finally:
         browser.close()
         pw.stop()
+
+
+def _page_height(page) -> int:
+    """Measure the page height in CSS pixels."""
+    return int(page.evaluate("""() => {
+        const doc = document.documentElement;
+        const body = document.body;
+        return Math.ceil(Math.max(
+            doc ? doc.scrollHeight : 0,
+            doc ? doc.offsetHeight : 0,
+            doc ? doc.clientHeight : 0,
+            body ? body.scrollHeight : 0,
+            body ? body.offsetHeight : 0,
+            body ? body.clientHeight : 0,
+            window.innerHeight
+        ));
+    }"""))
+
+
+def _wait_for_paint(page) -> None:
+    """Give the browser time to settle after layout-affecting changes."""
+    page.wait_for_timeout(150)
+    page.evaluate("""() => new Promise(resolve => {
+        requestAnimationFrame(() => requestAnimationFrame(resolve));
+    })""")
+
+
+def _capture_page_png(page) -> bytes:
+    """Capture a page as one image without scrolling or stitching."""
+    viewport = page.viewport_size or {"width": 1920, "height": 1080}
+    viewport_width = int(viewport["width"])
+    total_height = _page_height(page)
+
+    if total_height <= int(viewport["height"]):
+        return page.screenshot(full_page=True)
+
+    page.set_viewport_size({"width": viewport_width, "height": total_height})
+    page.evaluate("window.scrollTo(0, 0)")
+    _wait_for_paint(page)
+    return page.screenshot()
 
 
 # ── converters ──────────────────────────────────────────────────────────
@@ -274,8 +315,6 @@ def _screenshot_embed(embed_url: str, card_selector: str | None) -> bytes:
 
 def _convert_url_to_image(url: str, out_path: Path) -> None:
     """Screenshot the page (card for social media) and save as image."""
-    from PIL import Image
-
     png_bytes = _screenshot_url(url)
     img = Image.open(io.BytesIO(png_bytes))
     data = ImageData(frames=[img], metadata={})
@@ -318,8 +357,6 @@ def _convert_url_to_txt(url: str, out_path: Path) -> None:
 
 def _convert_url_to_svg(url: str, out_path: Path) -> None:
     """Screenshot the page (card for social media) and embed in SVG."""
-    from PIL import Image
-
     png_bytes = _screenshot_url(url)
     img = Image.open(io.BytesIO(png_bytes))
     w, h = img.size

@@ -6,7 +6,10 @@ import argparse
 import os
 import sys
 import tempfile
+import threading
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator
 
 from any2any import __version__
 from any2any.converters import (
@@ -16,6 +19,9 @@ from any2any.converters import (
     read_image,
     write_image,
 )
+
+_SPINNER_FRAMES = ("|", "/", "-", "\\")
+_SPINNER_INTERVAL = 0.1
 
 
 def _is_url(s: str) -> bool:
@@ -45,6 +51,47 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     return parser
+
+
+def _stderr_supports_animation() -> bool:
+    """Only animate in interactive terminals."""
+    return hasattr(sys.stderr, "isatty") and sys.stderr.isatty()
+
+
+def _spinner_text(frame: str, message: str) -> str:
+    return f"any2any: {frame} {message}..."
+
+
+@contextmanager
+def _work_indicator(message: str) -> Iterator[None]:
+    """Show a lightweight spinner while a long-running step is active."""
+    if not _stderr_supports_animation():
+        yield
+        return
+
+    stream = sys.stderr
+    stop = threading.Event()
+    initial = _spinner_text(_SPINNER_FRAMES[0], message)
+
+    def spin() -> None:
+        idx = 0
+        while not stop.wait(_SPINNER_INTERVAL):
+            idx = (idx + 1) % len(_SPINNER_FRAMES)
+            stream.write("\r" + _spinner_text(_SPINNER_FRAMES[idx], message))
+            stream.flush()
+
+    stream.write("\r" + initial)
+    stream.flush()
+
+    thread = threading.Thread(target=spin, daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        stop.set()
+        thread.join()
+        stream.write("\r" + (" " * len(initial)) + "\r")
+        stream.flush()
 
 
 def _safe_write(data: ImageData, path: Path) -> None:
@@ -113,7 +160,8 @@ def main(argv: list[str] | None = None) -> int:
         try:
             output_path = Path(output_raw)
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            convert_direct("url", input_raw, output_path)
+            with _work_indicator("converting"):
+                convert_direct("url", input_raw, output_path)
             print(f"{input_raw} -> {output_path}", file=sys.stderr)
         except Exception as exc:
             print(f"any2any: error: conversion failed: {exc}", file=sys.stderr)
@@ -122,28 +170,29 @@ def main(argv: list[str] | None = None) -> int:
 
     # ── file path (reader/writer pipeline) ─────────────────────────
     try:
-        data = read_image(input_path)
+        with _work_indicator("reading input"):
+            data = read_image(input_path)
     except Exception as exc:
         print(f"any2any: error: failed to read input: {exc}", file=sys.stderr)
         return 1
 
     try:
-        if multi_frame:
-            n = len(data.frames)
-            width = len(str(n))
-            for i, frame in enumerate(data.frames, 1):
-                frame_path = Path(output_raw.replace("*", str(i).zfill(width)))
-                single = ImageData(frames=[frame], metadata=data.metadata)
-                _safe_write(single, frame_path)
-            print(
-                f"{input_path} -> {n} frame(s) as .{out_ext}",
-                file=sys.stderr,
-            )
-        else:
-            output_path = Path(output_raw)
-            single = ImageData(frames=[data.frames[0]], metadata=data.metadata)
-            _safe_write(single, output_path)
-            print(f"{input_path} -> {output_path}", file=sys.stderr)
+        success_message: str
+        with _work_indicator("converting"):
+            if multi_frame:
+                n = len(data.frames)
+                width = len(str(n))
+                for i, frame in enumerate(data.frames, 1):
+                    frame_path = Path(output_raw.replace("*", str(i).zfill(width)))
+                    single = ImageData(frames=[frame], metadata=data.metadata)
+                    _safe_write(single, frame_path)
+                success_message = f"{input_path} -> {n} frame(s) as .{out_ext}"
+            else:
+                output_path = Path(output_raw)
+                single = ImageData(frames=[data.frames[0]], metadata=data.metadata)
+                _safe_write(single, output_path)
+                success_message = f"{input_path} -> {output_path}"
+        print(success_message, file=sys.stderr)
     except Exception as exc:
         print(f"any2any: error: conversion failed: {exc}", file=sys.stderr)
         return 1

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import http.server
+import io
 import threading
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import any2any.converters.web as web_module
 import pytest
+from PIL import Image
 
 from any2any.cli import _is_url, main
 from any2any.converters import can_convert, has_direct
@@ -98,7 +101,7 @@ def test_instagram_post_embed() -> None:
     embed_url, selector = result
     assert "ABC123" in embed_url
     assert "/embed/" in embed_url
-    assert selector is None
+    assert selector == ".instagram-media-rendered"
 
 
 def test_instagram_reel_embed() -> None:
@@ -112,6 +115,31 @@ def test_instagram_with_query_params() -> None:
     result = _social_embed(url)
     assert result is not None
     assert "DWx59MNDNCO" in result[0]
+
+
+def test_instagram_embed_uses_wider_viewport() -> None:
+    assert web_module._embed_viewport("https://www.instagram.com/p/ABC123/embed/") == {
+        "width": 1200,
+        "height": 1200,
+    }
+
+
+def test_twitter_embed_uses_wider_viewport() -> None:
+    assert web_module._embed_viewport(
+        "https://platform.twitter.com/embed/Tweet.html?id=123",
+    ) == {
+        "width": 1200,
+        "height": 1200,
+    }
+
+
+def test_other_embed_uses_default_viewport() -> None:
+    assert web_module._embed_viewport(
+        "https://www.tiktok.com/embed/v2/7000000000000",
+    ) == {
+        "width": 550,
+        "height": 800,
+    }
 
 
 def test_tiktok_embed() -> None:
@@ -151,6 +179,78 @@ def test_url_multi_frame_rejected(capsys: pytest.CaptureFixture[str]) -> None:
         assert main(["https://example.com", "*.png"]) == 1
         assert "not supported" in capsys.readouterr().err
         mock_render.assert_not_called()
+
+
+class _FakePage:
+    def __init__(self, width: int, height: int, total_height: int) -> None:
+        self.viewport_size = {"width": width, "height": height}
+        self.total_height = total_height
+        self.full_page_calls = 0
+        self.normal_calls = 0
+        self.resize_calls: list[dict[str, int]] = []
+        self.evaluate_calls: list[str] = []
+
+    def screenshot(self, *, full_page: bool = False) -> bytes:
+        if full_page:
+            self.full_page_calls += 1
+            img = Image.new("RGBA", (self.viewport_size["width"], self.total_height), "white")
+        else:
+            self.normal_calls += 1
+            img = Image.new("RGBA", (self.viewport_size["width"], self.viewport_size["height"]), "white")
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        return buf.getvalue()
+
+    def set_viewport_size(self, viewport: dict[str, int]) -> None:
+        self.resize_calls.append(viewport)
+        self.viewport_size = viewport
+
+    def evaluate(self, script: str) -> None:
+        self.evaluate_calls.append(script)
+
+
+def test_capture_page_png_uses_native_full_page_for_short_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _FakePage(width=20, height=200, total_height=210)
+
+    monkeypatch.setattr(web_module, "_page_height", lambda _page: 210)
+    monkeypatch.setattr(
+        web_module,
+        "_wait_for_paint",
+        lambda *_args: pytest.fail("short pages should not resize viewport"),
+    )
+
+    png = web_module._capture_page_png(page)
+    img = Image.open(io.BytesIO(png))
+
+    assert page.full_page_calls == 1
+    assert page.normal_calls == 0
+    assert page.resize_calls == []
+    assert img.size == (20, 210)
+
+
+def test_capture_page_png_resizes_viewport_for_long_pages(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page = _FakePage(width=12, height=200, total_height=450)
+    monkeypatch.setattr(web_module, "_page_height", lambda _page: 450)
+    wait_calls: list[str] = []
+    monkeypatch.setattr(
+        web_module,
+        "_wait_for_paint",
+        lambda _page: wait_calls.append("paint"),
+    )
+
+    png = web_module._capture_page_png(page)
+    img = Image.open(io.BytesIO(png))
+
+    assert page.full_page_calls == 0
+    assert page.normal_calls == 1
+    assert page.resize_calls == [{"width": 12, "height": 450}]
+    assert page.evaluate_calls == ["window.scrollTo(0, 0)"]
+    assert wait_calls == ["paint"]
+    assert img.size == (12, 450)
 
 
 # ── integration tests (require Playwright + Chromium) ───────────────────
